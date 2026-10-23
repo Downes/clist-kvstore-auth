@@ -1,0 +1,17 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "clist-kvstore-auth"
+version = "0.1.0"
+description = "Local JWT/JWKS verification of kvstore login tokens, open to any issuer, with qualified (did:web) identity for ownership checks — shared across the /srv/apps backends."
+requires-python = ">=3.9"
+dependencies = ["PyJWT[crypto]>=2.8"]
+
+[project.optional-dependencies]
+sync = ["requests"]
+asyncio = ["httpx"]
+
+[tool.setuptools.packages.find]
+include = ["clist_kvstore_auth*"]

@@ -29,7 +29,16 @@ from urllib.parse import urlparse
 import httpx
 import jwt
 from jwt import PyJWKClient
-from jwt.exceptions import PyJWKClientError, PyJWTError
+from jwt.exceptions import ExpiredSignatureError, PyJWKClientError, PyJWTError
+
+# See clist_kvstore_auth.sync's header comment for the rationale — same
+# per-failure-mode messages, kept in sync by hand between the two variants.
+_MSG_KEY_MISMATCH = (
+    "Your session can't be verified against the current signing key. "
+    "Please log out and log back in."
+)
+_MSG_EXPIRED = "Your session has expired. Please log in again."
+_MSG_INVALID = "Invalid or expired token. Please log in again."
 
 
 @dataclass(frozen=True)
@@ -87,17 +96,21 @@ async def verify_token(authorization, default_kvstore_url, timeout=5.0):
         try:
             unverified = jwt.decode(token, options={"verify_signature": False})
         except PyJWTError:
-            return None, ({"error": "Invalid or expired token"}, 401)
+            return None, ({"error": _MSG_INVALID}, 401)
         iss = unverified.get("iss")
         if not iss:
-            return None, ({"error": "Invalid or expired token"}, 401)
+            return None, ({"error": _MSG_INVALID}, 401)
         try:
             payload = await asyncio.to_thread(_verify_jwt_blocking, token, iss)
-        except (PyJWTError, PyJWKClientError):
-            return None, ({"error": "Invalid or expired token"}, 401)
+        except PyJWKClientError:
+            return None, ({"error": _MSG_KEY_MISMATCH}, 401)
+        except ExpiredSignatureError:
+            return None, ({"error": _MSG_EXPIRED}, 401)
+        except PyJWTError:
+            return None, ({"error": _MSG_INVALID}, 401)
         username = payload.get("sub")
         if not username:
-            return None, ({"error": "Invalid or expired token"}, 401)
+            return None, ({"error": _MSG_INVALID}, 401)
         return Identity(username, iss, qualified_id(iss, username)), None
 
     # Opaque/legacy token — kvstore holds the hash, can't verify locally.
@@ -111,10 +124,18 @@ async def verify_token(authorization, default_kvstore_url, timeout=5.0):
     except httpx.RequestError:
         return None, ({"error": "KVStore unreachable"}, 502)
     if resp.status_code != 200:
-        return None, ({"error": "Invalid or expired token"}, 401)
+        # Relay kvstore's own message (e.g. "Token expired") when it gave
+        # one, rather than flattening every opaque-token failure to the
+        # same generic text.
+        detail = None
+        try:
+            detail = (resp.json() or {}).get("error")
+        except ValueError:
+            pass
+        return None, ({"error": detail or _MSG_INVALID}, 401)
     username = (resp.json() or {}).get("username") or ""
     if not username:
-        return None, ({"error": "Invalid or expired token"}, 401)
+        return None, ({"error": _MSG_INVALID}, 401)
     return Identity(username, default_kvstore_url, qualified_id(default_kvstore_url, username)), None
 
 
